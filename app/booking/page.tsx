@@ -1,3 +1,4 @@
+"use client";
 export default function BookingPage() {
   return (
     <div style={{ fontFamily: "sans-serif", padding: "20px" }}>
