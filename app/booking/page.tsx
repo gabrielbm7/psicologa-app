@@ -1,27 +1,18 @@
+// app/booking/page.tsx
 import BookingClient from "./ui/BookingClient";
 
-export const metadata = {
-  title: "Agendar consulta",
-};
-
-export default function BookingPage({
+export default async function BookingPage({
   searchParams,
 }: {
-  searchParams?: Record<string, string | string[] | undefined>;
+  // Next 15: searchParams é uma Promise
+  searchParams: Promise<{ tipo?: string }>;
 }) {
+  const sp = await searchParams;
+
   const defaultTipo =
-    (typeof searchParams?.tipo === "string" &&
-      (searchParams.tipo === "online" || searchParams.tipo === "presencial")
-      ? searchParams.tipo
-      : "online") as "online" | "presencial";
+    sp?.tipo === "presencial" || sp?.tipo === "online"
+      ? (sp.tipo as "online" | "presencial")
+      : "online";
 
-  // 👇 use o ID da psicóloga (já me passou antes)
-  const providerId = "cme85bsyz000072zolcarfaqp";
-
-  return (
-    <main className="mx-auto max-w-[920px] px-4 py-8">
-      <h1 className="text-2xl font-semibold mb-4">Agendar consulta</h1>
-      <BookingClient providerId={providerId} defaultTipo={defaultTipo} />
-    </main>
-  );
+  return <BookingClient defaultTipo={defaultTipo} />;
 }
