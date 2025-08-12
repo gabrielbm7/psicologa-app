@@ -16,6 +16,7 @@ model User {
   providerSettings ProviderSettings?
   availabilities   Availability[]
   appointments     Appointment[]
+  GoogleAuth       GoogleAuth?
 }
 
 model ProviderSettings {
@@ -66,4 +67,16 @@ model Appointment {
   provider   User       @relation(fields: [providerId], references: [id])
 
   @@index([providerId, startUtc])
+}
+
+model GoogleAuth {
+  id           String   @id @default(cuid())
+  providerId   String   @unique
+  accessToken  String
+  refreshToken String
+  expiryDate   DateTime
+  scope        String?
+  tokenType    String?
+
+  provider User @relation(fields: [providerId], references: [id])
 }
