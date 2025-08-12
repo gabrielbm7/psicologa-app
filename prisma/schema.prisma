@@ -1,0 +1,40 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")  // usada em runtime
+  directUrl  = env("DIRECT_URL")    // usada para migrações
+}
+
+model User {
+  id        String             @id @default(cuid())
+  name      String
+  email     String             @unique
+  settings  ProviderSettings?
+  slots     Availability[]
+}
+
+model ProviderSettings {
+  id                  String   @id @default(cuid())
+  providerId          String   @unique
+  sessionDuration     Int      // minutos de duração (ex: 50)
+  bufferBefore        Int      // minutos antes
+  bufferAfter         Int      // minutos depois
+  price               Float
+  allowOnline         Boolean
+  allowInPerson       Boolean
+  minHoursBeforeBook  Int      // mínimo em horas para agendar
+  minHoursBeforeResch Int      // mínimo em horas para remarcar
+  provider            User     @relation(fields: [providerId], references: [id])
+}
+
+model Availability {
+  id          String   @id @default(cuid())
+  dayOfWeek   Int      // 0 = domingo, 1 = segunda, ...
+  startTime   String
+  endTime     String
+  providerId  String
+  provider    User     @relation(fields: [providerId], references: [id])
+}
