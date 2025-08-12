@@ -21,18 +21,35 @@ function toYMD(d: Date) {
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
 }
+
 function sameDay(aIso: string, key: string) {
   const d = new Date(aIso);
   const [ky, km, kd] = key.split("-").map(Number);
   return d.getFullYear() === ky && d.getMonth() + 1 === km && d.getDate() === kd;
 }
-function nextMonday(from = new Date()) {
+
+// começa hoje (se fim de semana, pula para a próxima segunda)
+function startBusinessFromToday(from = new Date()) {
   const d = new Date(from);
   d.setHours(0, 0, 0, 0);
   const dow = d.getDay(); // 0=Dom..6=Sáb
-  const delta = dow === 1 ? 0 : (8 - dow) % 7; // se já for seg, fica; senão vai p/ próxima seg
-  d.setDate(d.getDate() + delta);
+  if (dow === 0) d.setDate(d.getDate() + 1);       // domingo -> segunda
+  if (dow === 6) d.setDate(d.getDate() + 2);       // sábado -> segunda
   return d;
+}
+
+// gera exatamente 15 DIAS ÚTEIS (3 semanas úteis) a partir do start
+function nextBusinessDays(start: Date, businessDays: number) {
+  const arr: Date[] = [];
+  const d = new Date(start);
+  while (arr.length < businessDays) {
+    const dow = d.getDay();
+    if (dow >= 1 && dow <= 5) {
+      arr.push(new Date(d));
+    }
+    d.setDate(d.getDate() + 1);
+  }
+  return arr;
 }
 
 export default function BookingClient({ providerId }: { providerId: string }) {
@@ -41,21 +58,13 @@ export default function BookingClient({ providerId }: { providerId: string }) {
   const [loading, setLoading] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
 
-  // Próximas 2 semanas úteis (Seg..Sex + Seg..Sex), começando na próxima segunda
+  // Dias: 3 semanas úteis a partir de hoje (ou próxima segunda)
   const days = useMemo(() => {
-    const start = nextMonday(new Date());
-    const arr: Date[] = [];
-    for (let week = 0; week < 2; week++) {
-      for (let i = 0; i < 5; i++) {
-        const d = new Date(start);
-        d.setDate(start.getDate() + week * 7 + i);
-        arr.push(d);
-      }
-    }
-    return arr;
+    const start = startBusinessFromToday(new Date());
+    return nextBusinessDays(start, 15); // 15 dias úteis = 3 semanas úteis
   }, []);
 
-  const [selectedKey, setSelectedKey] = useState<string>(() => toYMD(nextMonday(new Date())));
+  const [selectedKey, setSelectedKey] = useState<string>(() => toYMD(startBusinessFromToday(new Date())));
 
   // Carrega slots ao mudar tipo/provider
   useEffect(() => {
@@ -83,7 +92,7 @@ export default function BookingClient({ providerId }: { providerId: string }) {
       <header className="space-y-2">
         <h1 className="text-2xl font-semibold">Agendar consulta</h1>
         <p className="text-sm text-gray-600">
-          Selecione o tipo, escolha a data nas próximas 2 semanas úteis e depois um horário.
+          Selecione o tipo, escolha a data nas próximas 3 semanas úteis e depois um horário.
         </p>
       </header>
 
@@ -125,7 +134,6 @@ export default function BookingClient({ providerId }: { providerId: string }) {
                 ].join(" ")}
               >
                 <span className={selected ? "opacity-100" : "opacity-80"}>{opt.icon}</span>
-                {/* Apenas o nome, sem horários adicionais */}
                 <span className="font-medium">{opt.label}</span>
               </button>
             );
@@ -133,7 +141,7 @@ export default function BookingClient({ providerId }: { providerId: string }) {
         </div>
       </div>
 
-      {/* Datas (2 semanas úteis), em ordem Seg..Sex por semana */}
+      {/* Datas: 3 semanas úteis a partir de hoje (Seg..Sex) */}
       <section className="space-y-2">
         <h2 className="font-medium">Selecione a data</h2>
         <div className="grid grid-cols-2 xs:grid-cols-3 sm:grid-cols-5 gap-3">
@@ -190,7 +198,7 @@ export default function BookingClient({ providerId }: { providerId: string }) {
                   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black focus-visible:ring-offset-2",
                   st.bg, st.text, st.border,
                 ].join(" ")}
-                // TODO: aqui chama o fluxo de reserva/pagamento
+                // TODO: aqui chama o fluxo de reserva/pagamento (PagSeguro)
                 onClick={() => alert(`Selecionado: ${d.toLocaleString("pt-BR")}`)}
               >
                 {d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
