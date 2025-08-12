@@ -47,7 +47,7 @@ export default function Home() {
             target="_blank"
             rel="noopener noreferrer"
           >
-            Read our docs
+            Olá, está no ar!
           </a>
         </div>
       </main>
