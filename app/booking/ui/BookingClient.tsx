@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 
 type Tipo = "online" | "presencial";
 
-// Paleta por dia (0=Dom..6=Sáb) — só cores, sem nomes
+// Paleta por dia (0=Dom..6=Sáb) — só cores
 const weekdayStyles: Record<number, { bg: string; text: string; ring: string; border: string }> = {
   0: { bg: "bg-yellow-100",   text: "text-yellow-800",  ring: "ring-yellow-300",  border: "border-yellow-200" },  // dom
   1: { bg: "bg-slate-100",    text: "text-slate-700",   ring: "ring-slate-300",   border: "border-slate-200" },   // seg
@@ -30,7 +30,7 @@ function nextMonday(from = new Date()) {
   const d = new Date(from);
   d.setHours(0, 0, 0, 0);
   const dow = d.getDay(); // 0=Dom..6=Sáb
-  const delta = (dow === 1) ? 0 : ((8 - dow) % 7); // se hoje já for seg, fica; senão vai pra próxima seg
+  const delta = dow === 1 ? 0 : (8 - dow) % 7; // se já for seg, fica; senão vai p/ próxima seg
   d.setDate(d.getDate() + delta);
   return d;
 }
@@ -41,7 +41,7 @@ export default function BookingClient({ providerId }: { providerId: string }) {
   const [loading, setLoading] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
 
-  // Próximas 2 semanas úteis: Seg..Sex + Seg..Sex, começando na próxima segunda
+  // Próximas 2 semanas úteis (Seg..Sex + Seg..Sex), começando na próxima segunda
   const days = useMemo(() => {
     const start = nextMonday(new Date());
     const arr: Date[] = [];
@@ -87,7 +87,7 @@ export default function BookingClient({ providerId }: { providerId: string }) {
         </p>
       </header>
 
-      {/* TOGGLE: Presencial x Online — mobile-first, largura cheia e feedback de toque */}
+      {/* TOGGLE: Presencial x Online — sem horários extras no rótulo */}
       <div className="w-full max-w-md">
         <div className="grid grid-cols-2 rounded-2xl border bg-white p-1 shadow-sm">
           {([
@@ -125,6 +125,7 @@ export default function BookingClient({ providerId }: { providerId: string }) {
                 ].join(" ")}
               >
                 <span className={selected ? "opacity-100" : "opacity-80"}>{opt.icon}</span>
+                {/* Apenas o nome, sem horários adicionais */}
                 <span className="font-medium">{opt.label}</span>
               </button>
             );
@@ -165,7 +166,7 @@ export default function BookingClient({ providerId }: { providerId: string }) {
         </div>
       </section>
 
-      {/* Horários do dia selecionado — com as mesmas cores do dia */}
+      {/* Horários do dia selecionado — cores do dia */}
       <section className="space-y-2">
         <h2 className="font-medium">Horários disponíveis</h2>
 
