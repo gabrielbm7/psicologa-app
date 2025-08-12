@@ -11,6 +11,7 @@ export function makeAuthUrl(providerId: string) {
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/calendar.events",
   ].join(" ");
+
   const params = new URLSearchParams({
     client_id,
     redirect_uri,
@@ -21,6 +22,7 @@ export function makeAuthUrl(providerId: string) {
     include_granted_scopes: "true",
     state: JSON.stringify({ providerId }),
   });
+
   return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
 }
 
@@ -62,7 +64,7 @@ export async function exchangeAndStoreTokens(
   };
 
   const accessToken = data.access_token;
-  const refreshToken = data.refresh_token; // pode não vir sempre
+  const refreshTokenMaybe = data.refresh_token; // pode não vir sempre
   const expiresInMs = (data.expires_in ?? 3600) * 1000;
   const expiryDate = new Date(Date.now() + expiresInMs);
 
@@ -72,14 +74,14 @@ export async function exchangeAndStoreTokens(
     where: { providerId },
     update: {
       accessToken,
-      // não usar null; use undefined para “não alterar”
-      refreshToken: refreshToken ?? prev?.refreshToken ?? undefined,
+      // 👇 sempre string para satisfazer o tipo do Prisma
+      refreshToken: (refreshTokenMaybe ?? prev?.refreshToken) ?? "",
       expiryDate,
     },
     create: {
       providerId,
       accessToken,
-      refreshToken: refreshToken ?? prev?.refreshToken ?? undefined,
+      refreshToken: (refreshTokenMaybe ?? prev?.refreshToken) ?? "",
       expiryDate,
     },
   });
@@ -104,7 +106,10 @@ export async function getValidAccessToken(
 
   if (!isExpired) return accessToken!;
 
-  if (!refreshToken) throw new Error("Refresh token ausente. Refaça a conexão com o Google.");
+  if (!refreshToken) {
+    // no nosso schema refreshToken é string obrigatória; cair aqui é raro
+    throw new Error("Refresh token ausente. Refaça a conexão com o Google.");
+  }
 
   const client_id = process.env.GOOGLE_CLIENT_ID!;
   const client_secret = process.env.GOOGLE_CLIENT_SECRET!;
@@ -130,25 +135,25 @@ export async function getValidAccessToken(
   const data = (await resp.json()) as {
     access_token: string;
     expires_in?: number;
-    refresh_token?: string;
+    refresh_token?: string; // pode vir em renovações
   };
 
   const newAccess = data.access_token;
   const expiresInMs = (data.expires_in ?? 3600) * 1000;
   const newExpiry = new Date(Date.now() + expiresInMs);
-  const newRefresh = data.refresh_token ?? refreshToken;
+  const newRefreshMaybe = data.refresh_token;
 
   await prisma.googleAuth.upsert({
     where: { providerId },
     update: {
       accessToken: newAccess,
-      refreshToken: newRefresh ?? undefined,
+      refreshToken: (newRefreshMaybe ?? refreshToken) ?? "",
       expiryDate: newExpiry,
     },
     create: {
       providerId,
       accessToken: newAccess,
-      refreshToken: newRefresh ?? undefined,
+      refreshToken: (newRefreshMaybe ?? refreshToken) ?? "",
       expiryDate: newExpiry,
     },
   });
