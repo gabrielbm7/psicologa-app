@@ -72,14 +72,13 @@ export async function exchangeAndStoreTokens(
     where: { providerId },
     update: {
       accessToken,
-      // ✅ não usar null; use undefined para “não alterar”
+      // não usar null; use undefined para “não alterar”
       refreshToken: refreshToken ?? prev?.refreshToken ?? undefined,
       expiryDate,
     },
     create: {
       providerId,
       accessToken,
-      // ✅ no create também podemos passar undefined
       refreshToken: refreshToken ?? prev?.refreshToken ?? undefined,
       expiryDate,
     },
@@ -143,7 +142,6 @@ export async function getValidAccessToken(
     where: { providerId },
     update: {
       accessToken: newAccess,
-      // ✅ sem null
       refreshToken: newRefresh ?? undefined,
       expiryDate: newExpiry,
     },
@@ -178,4 +176,4 @@ export async function getAuthedCalendar(prisma: PrismaClient, providerId: string
       return { ok: res.ok, status: res.status, data };
     },
   };
-}}
+}
