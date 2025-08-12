@@ -1,23 +1,33 @@
 import { NextRequest, NextResponse } from "next/server";
+import { PrismaClient } from "@prisma/client";
 import { getAuthedCalendar } from "@/lib/google";
+
+const prisma = new PrismaClient();
 
 export async function GET(req: NextRequest) {
   try {
-    const url = new URL(req.url);
-    const providerId = url.searchParams.get("providerId");
+    const { searchParams } = new URL(req.url);
+    const providerId = searchParams.get("providerId") || "";
     if (!providerId) return NextResponse.json({ error: "providerId é obrigatório" }, { status: 400 });
 
-    const cal = await getAuthedCalendar(providerId);
-    const { data } = await cal.calendarList.list({ minAccessRole: "owner" });
-    const items = (data.items || []).map(c => ({
+    const cal = await getAuthedCalendar(prisma, providerId);
+
+    // Lista de calendários do usuário (somente owner)
+    const url = "https://www.googleapis.com/calendar/v3/users/me/calendarList?minAccessRole=owner";
+    const { ok, status, data } = await cal.fetchJson(url);
+
+    if (!ok) return NextResponse.json({ error: data }, { status });
+
+    const items = (data.items || []).map((c: any) => ({
       id: c.id,
       summary: c.summary,
-      primary: c.primary || false,
-      selected: c.selected || false,
-      accessRole: c.accessRole
+      primary: !!c.primary,
+      selected: !!c.selected,
+      accessRole: c.accessRole,
     }));
+
     return NextResponse.json({ calendars: items });
   } catch (e: any) {
-    return NextResponse.json({ error: e.message || "Falha ao listar calendários" }, { status: 500 });
+    return NextResponse.json({ error: e?.message || "Erro inesperado" }, { status: 500 });
   }
 }
