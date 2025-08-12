@@ -4,213 +4,169 @@ import { useEffect, useMemo, useState } from "react";
 
 type Tipo = "online" | "presencial";
 
-// Paleta por dia (0=Dom..6=Sáb) — só cores
-const weekdayStyles: Record<number, { bg: string; text: string; ring: string; border: string }> = {
-  0: { bg: "bg-yellow-100",   text: "text-yellow-800",  ring: "ring-yellow-300",  border: "border-yellow-200" },  // dom
-  1: { bg: "bg-slate-100",    text: "text-slate-700",   ring: "ring-slate-300",   border: "border-slate-200" },   // seg
-  2: { bg: "bg-red-100",      text: "text-red-700",     ring: "ring-red-300",     border: "border-red-200" },     // ter
-  3: { bg: "bg-emerald-100",  text: "text-emerald-700", ring: "ring-emerald-300", border: "border-emerald-200" }, // qua
-  4: { bg: "bg-blue-100",     text: "text-blue-700",    ring: "ring-blue-300",    border: "border-blue-200" },    // qui
-  5: { bg: "bg-pink-100",     text: "text-pink-700",    ring: "ring-pink-300",    border: "border-pink-200" },    // sex
-  6: { bg: "bg-purple-100",   text: "text-purple-700",  ring: "ring-purple-300",  border: "border-purple-200" },  // sáb
+type Props = {
+  defaultTipo?: Tipo;
 };
 
-function toYMD(d: Date) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+// Id fixo da provedora (o que você já usa no backend)
+const PROVIDER_ID = "cme85bsyz000072zolcarfaqp";
+
+// util: formata data/hora local
+function fmt(dtIso: string) {
+  const d = new Date(dtIso);
+  return new Intl.DateTimeFormat("pt-BR", {
+    dateStyle: "short",
+    timeStyle: "short",
+  }).format(d);
 }
 
-function sameDay(aIso: string, key: string) {
-  const d = new Date(aIso);
-  const [ky, km, kd] = key.split("-").map(Number);
-  return d.getFullYear() === ky && d.getMonth() + 1 === km && d.getDate() === kd;
-}
-
-// começa hoje (se fim de semana, pula para a próxima segunda)
-function startBusinessFromToday(from = new Date()) {
-  const d = new Date(from);
-  d.setHours(0, 0, 0, 0);
-  const dow = d.getDay(); // 0=Dom..6=Sáb
-  if (dow === 0) d.setDate(d.getDate() + 1);       // domingo -> segunda
-  if (dow === 6) d.setDate(d.getDate() + 2);       // sábado -> segunda
-  return d;
-}
-
-// gera exatamente 15 DIAS ÚTEIS (3 semanas úteis) a partir do start
-function nextBusinessDays(start: Date, businessDays: number) {
-  const arr: Date[] = [];
-  const d = new Date(start);
-  while (arr.length < businessDays) {
-    const dow = d.getDay();
-    if (dow >= 1 && dow <= 5) {
-      arr.push(new Date(d));
-    }
-    d.setDate(d.getDate() + 1);
-  }
-  return arr;
-}
-
-export default function BookingClient({ providerId }: { providerId: string }) {
-  const [tipo, setTipo] = useState<Tipo>("presencial");
-  const [slots, setSlots] = useState<string[]>([]);
+export default function BookingClient({ defaultTipo = "online" }: Props) {
+  const [tipo, setTipo] = useState<Tipo>(defaultTipo);
   const [loading, setLoading] = useState(false);
-  const [erro, setErro] = useState<string | null>(null);
+  const [slots, setSlots] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
-  // Dias: 3 semanas úteis a partir de hoje (ou próxima segunda)
-  const days = useMemo(() => {
-    const start = startBusinessFromToday(new Date());
-    return nextBusinessDays(start, 15); // 15 dias úteis = 3 semanas úteis
-  }, []);
-
-  const [selectedKey, setSelectedKey] = useState<string>(() => toYMD(startBusinessFromToday(new Date())));
-
-  // Carrega slots ao mudar tipo/provider
+  // carrega slots quando muda o tipo
   useEffect(() => {
-    const load = async () => {
+    let cancel = false;
+    async function load() {
       setLoading(true);
-      setErro(null);
+      setError(null);
       try {
-        const res = await fetch(`/api/slots?providerId=${providerId}&tipo=${tipo}`, { cache: "no-store" });
+        const q = new URLSearchParams({
+          providerId: PROVIDER_ID,
+          tipo,
+        });
+        const res = await fetch(`/api/slots?${q.toString()}`, { cache: "no-store" });
+        if (!res.ok) {
+          const txt = await res.text();
+          throw new Error(txt || `Erro HTTP ${res.status}`);
+        }
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "Falha ao carregar horários");
-        setSlots(data.slots || []);
+        if (!cancel) {
+          setSlots(Array.isArray(data.slots) ? data.slots : []);
+        }
       } catch (e: any) {
-        setErro(e.message);
+        if (!cancel) setError(e?.message || "Falha ao carregar slots");
       } finally {
-        setLoading(false);
+        if (!cancel) setLoading(false);
       }
-    };
+    }
     load();
-  }, [providerId, tipo]);
+    return () => {
+      cancel = true;
+    };
+  }, [tipo]);
 
-  const slotsOfDay = useMemo(() => slots.filter((s) => sameDay(s, selectedKey)), [slots, selectedKey]);
-
+  // UI
   return (
-    <div className="max-w-3xl mx-auto space-y-6">
-      <header className="space-y-2">
-        <h1 className="text-2xl font-semibold">Agendar consulta</h1>
-        <p className="text-sm text-gray-600">
-          Selecione o tipo, escolha a data nas próximas 3 semanas úteis e depois um horário.
-        </p>
-      </header>
+    <div
+      style={{
+        maxWidth: 720,
+        margin: "0 auto",
+        padding: "24px 16px",
+        fontFamily:
+          "-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif",
+      }}
+    >
+      <h1 style={{ fontSize: 24, margin: "0 0 12px" }}>Agendamento</h1>
 
-      {/* TOGGLE: Presencial x Online — sem horários extras no rótulo */}
-      <div className="w-full max-w-md">
-        <div className="grid grid-cols-2 rounded-2xl border bg-white p-1 shadow-sm">
-          {([
-            {
-              key: "presencial",
-              label: "Presencial",
-              icon: (
-                <svg viewBox="0 0 24 24" className="h-5 w-5" fill="currentColor" aria-hidden>
-                  <path d="M12 3l9 8h-3v9h-5v-6H11v6H6v-9H3l9-8z" />
-                </svg>
-              ),
-            },
-            {
-              key: "online",
-              label: "Online",
-              icon: (
-                <svg viewBox="0 0 24 24" className="h-5 w-5" fill="currentColor" aria-hidden>
-                  <path d="M17 10.5V7a2 2 0 0 0-2-2H5C3.9 5 3 5.9 3 7v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3.5l4 4v-11l-4 4z" />
-                </svg>
-              ),
-            },
-          ] as const).map((opt) => {
-            const selected = tipo === (opt.key as Tipo);
-            return (
-              <button
-                key={opt.key}
-                type="button"
-                aria-pressed={selected}
-                onClick={() => setTipo(opt.key as Tipo)}
-                className={[
-                  "flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-base",
-                  "transition motion-safe:duration-150 active:scale-[0.98]",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black focus-visible:ring-offset-2",
-                  selected ? "bg-black text-white shadow-md" : "text-gray-700 hover:bg-gray-100",
-                ].join(" ")}
-              >
-                <span className={selected ? "opacity-100" : "opacity-80"}>{opt.icon}</span>
-                <span className="font-medium">{opt.label}</span>
-              </button>
-            );
-          })}
-        </div>
+      {/* Toggle de tipo */}
+      <div
+        role="tablist"
+        aria-label="Tipo de atendimento"
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr",
+          gap: 8,
+          marginBottom: 16,
+        }}
+      >
+        <button
+          role="tab"
+          aria-selected={tipo === "online"}
+          onClick={() => setTipo("online")}
+          style={{
+            padding: "10px 12px",
+            borderRadius: 10,
+            border: "1px solid #ddd",
+            background: tipo === "online" ? "#111" : "#fff",
+            color: tipo === "online" ? "#fff" : "#111",
+            fontWeight: 600,
+          }}
+        >
+          Online
+        </button>
+        <button
+          role="tab"
+          aria-selected={tipo === "presencial"}
+          onClick={() => setTipo("presencial")}
+          style={{
+            padding: "10px 12px",
+            borderRadius: 10,
+            border: "1px solid #ddd",
+            background: tipo === "presencial" ? "#111" : "#fff",
+            color: tipo === "presencial" ? "#fff" : "#111",
+            fontWeight: 600,
+          }}
+        >
+          Presencial
+        </button>
       </div>
 
-      {/* Datas: 3 semanas úteis a partir de hoje (Seg..Sex) */}
-      <section className="space-y-2">
-        <h2 className="font-medium">Selecione a data</h2>
-        <div className="grid grid-cols-2 xs:grid-cols-3 sm:grid-cols-5 gap-3">
-          {days.map((d) => {
-            const key = toYMD(d);
-            const weekday = d.getDay(); // 1..5
-            const st = weekdayStyles[weekday];
-            const selected = key === selectedKey;
-            return (
-              <button
-                key={key}
-                onClick={() => setSelectedKey(key)}
-                className={[
-                  "p-3 sm:p-4 rounded-xl border text-left transition ring-2",
-                  "motion-safe:duration-150 active:scale-[0.98]",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black focus-visible:ring-offset-2",
-                  selected ? `${st.ring} ring-offset-2` : "ring-transparent",
-                  st.bg, st.text, st.border, "hover:brightness-95",
-                ].join(" ")}
-              >
-                <div className="text-xs uppercase tracking-wide opacity-80">
-                  {d.toLocaleDateString("pt-BR", { weekday: "short" })}
-                </div>
-                <div className="text-lg font-semibold">
-                  {d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })}
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      </section>
+      {/* Estado de carregamento/erro */}
+      {loading && <p>Carregando horários…</p>}
+      {error && (
+        <p style={{ color: "#c00" }}>
+          Falha ao carregar os horários: {String(error)}
+        </p>
+      )}
 
-      {/* Horários do dia selecionado — cores do dia */}
-      <section className="space-y-2">
-        <h2 className="font-medium">Horários disponíveis</h2>
-
-        {loading && <p>Carregando horários…</p>}
-        {erro && <p className="text-red-600">Erro: {erro}</p>}
-        {!loading && !erro && slotsOfDay.length === 0 && (
-          <p className="text-gray-600">Nenhum horário para esta data.</p>
-        )}
-
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 sm:gap-3">
-          {slotsOfDay.map((s) => {
-            const d = new Date(s);
-            const weekday = d.getDay();
-            const st = weekdayStyles[weekday];
-            return (
-              <button
-                key={s}
-                className={[
-                  "w-full border rounded-xl px-4 py-3 text-left",
-                  "transition motion-safe:duration-150 active:scale-[0.98] hover:brightness-95",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black focus-visible:ring-offset-2",
-                  st.bg, st.text, st.border,
-                ].join(" ")}
-                // TODO: aqui chama o fluxo de reserva/pagamento (PagSeguro)
-                onClick={() => alert(`Selecionado: ${d.toLocaleString("pt-BR")}`)}
-              >
-                {d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
-                <span className="text-black/40">
-                  {" "}
-                  · {d.toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit" })}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </section>
+      {/* Lista de slots */}
+      {!loading && !error && (
+        <>
+          {slots.length === 0 ? (
+            <p>Sem horários disponíveis.</p>
+          ) : (
+            <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+              {slots.map((s) => (
+                <li key={s} style={{ marginBottom: 8 }}>
+                  <button
+                    onClick={async () => {
+                      try {
+                        const res = await fetch("/api/book", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({
+                            providerId: PROVIDER_ID,
+                            tipo,
+                            start: s,
+                          }),
+                        });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data?.error || "Erro ao reservar");
+                        alert("Horário reservado! Confira seu email 😊");
+                      } catch (e: any) {
+                        alert(e?.message || "Falha ao reservar");
+                      }
+                    }}
+                    style={{
+                      width: "100%",
+                      textAlign: "left",
+                      padding: "12px 14px",
+                      borderRadius: 10,
+                      border: "1px solid #e6e6e6",
+                      background: "#fafafa",
+                    }}
+                  >
+                    {fmt(s)}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
     </div>
   );
 }
