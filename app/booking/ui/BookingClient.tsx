@@ -4,18 +4,18 @@ import { useEffect, useMemo, useState } from "react";
 
 type Tipo = "online" | "presencial";
 
+// Paleta por dia (Dom..Sáb). Mantemos só as cores; sem nomes de planetas no UI.
 const weekdayStyles: Record<number, { bg: string; text: string; ring: string }> = {
-  0: { bg: "bg-yellow-100",   text: "text-yellow-800",  ring: "ring-yellow-300" },   // Sol (domingo)
-  1: { bg: "bg-slate-100",    text: "text-slate-700",   ring: "ring-slate-300" },    // Lua (segunda)
-  2: { bg: "bg-red-100",      text: "text-red-700",     ring: "ring-red-300" },      // Marte (terça)
-  3: { bg: "bg-emerald-100",  text: "text-emerald-700", ring: "ring-emerald-300" },  // Mercúrio (quarta)
-  4: { bg: "bg-blue-100",     text: "text-blue-700",    ring: "ring-blue-300" },     // Júpiter (quinta)
-  5: { bg: "bg-pink-100",     text: "text-pink-700",    ring: "ring-pink-300" },     // Vênus (sexta)
-  6: { bg: "bg-purple-100",   text: "text-purple-700",  ring: "ring-purple-300" },   // Saturno (sábado)
+  0: { bg: "bg-yellow-100",   text: "text-yellow-800",  ring: "ring-yellow-300" },   // domingo
+  1: { bg: "bg-slate-100",    text: "text-slate-700",   ring: "ring-slate-300" },    // segunda
+  2: { bg: "bg-red-100",      text: "text-red-700",     ring: "ring-red-300" },      // terça
+  3: { bg: "bg-emerald-100",  text: "text-emerald-700", ring: "ring-emerald-300" },  // quarta
+  4: { bg: "bg-blue-100",     text: "text-blue-700",    ring: "ring-blue-300" },     // quinta
+  5: { bg: "bg-pink-100",     text: "text-pink-700",    ring: "ring-pink-300" },     // sexta
+  6: { bg: "bg-purple-100",   text: "text-purple-700",  ring: "ring-purple-300" },   // sábado
 };
 
 function toDateKey(d: Date) {
-  // yyyy-mm-dd no fuso do navegador (suficiente pro front)
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
@@ -24,12 +24,13 @@ function toDateKey(d: Date) {
 
 function sameDay(aIso: string, key: string) {
   const d = new Date(aIso);
-  const k = key.split("-");
-  return (
-    d.getFullYear() === Number(k[0]) &&
-    d.getMonth() + 1 === Number(k[1]) &&
-    d.getDate() === Number(k[2])
-  );
+  const [ky, km, kd] = key.split("-").map(Number);
+  return d.getFullYear() === ky && d.getMonth() + 1 === km && d.getDate() === kd;
+}
+
+function isWeekday(d: Date) {
+  const dow = d.getDay(); // 0=Dom..6=Sáb
+  return dow >= 1 && dow <= 5;
 }
 
 export default function BookingClient({ providerId }: { providerId: string }) {
@@ -38,23 +39,31 @@ export default function BookingClient({ providerId }: { providerId: string }) {
   const [loading, setLoading] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
 
-  // gera os próximos 14 dias a partir de hoje
+  // Próximas 2 semanas (14 dias), mas exibimos apenas dias úteis dentro desse intervalo
   const days = useMemo(() => {
     const arr: Date[] = [];
     const today = new Date();
-    // zera horas
     today.setHours(0, 0, 0, 0);
     for (let i = 0; i < 14; i++) {
       const d = new Date(today);
       d.setDate(today.getDate() + i);
-      arr.push(d);
+      if (isWeekday(d)) arr.push(d);
     }
     return arr;
   }, []);
 
-  const [selectedKey, setSelectedKey] = useState<string>(() => toDateKey(new Date()));
+  const [selectedKey, setSelectedKey] = useState<string>(() => {
+    const today = new Date();
+    // se hoje for fim de semana, seleciona a próxima segunda
+    if (!isWeekday(today)) {
+      const d = new Date(today);
+      while (!isWeekday(d)) d.setDate(d.getDate() + 1);
+      return toDateKey(d);
+    }
+    return toDateKey(today);
+  });
 
-  // carrega slots quando mudar o tipo (online/presencial) ou provider
+  // Carrega slots ao mudar tipo/provider
   useEffect(() => {
     const load = async () => {
       setLoading(true);
@@ -73,46 +82,65 @@ export default function BookingClient({ providerId }: { providerId: string }) {
     load();
   }, [providerId, tipo]);
 
-  // filtra os slots somente do dia selecionado
-  const slotsOfDay = useMemo(
-    () => slots.filter((s) => sameDay(s, selectedKey)),
-    [slots, selectedKey]
-  );
+  const slotsOfDay = useMemo(() => slots.filter((s) => sameDay(s, selectedKey)), [slots, selectedKey]);
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
-      {/* Título */}
       <header className="space-y-2">
         <h1 className="text-2xl font-semibold">Agendar consulta</h1>
-        <p className="text-sm text-gray-600">
-          Escolha o tipo de consulta, selecione a data (próximas 2 semanas) e depois um horário.
-        </p>
+        <p className="text-sm text-gray-600">Escolha o tipo, selecione a data (próximas 2 semanas úteis) e depois um horário.</p>
       </header>
 
-      {/* Tipo: Presencial x Online */}
-      <div className="flex flex-wrap gap-3">
-        <button
-          onClick={() => setTipo("presencial")}
-          className={`px-4 py-2 rounded border ${
-            tipo === "presencial" ? "bg-black text-white border-black" : "bg-white text-black hover:bg-gray-50"
-          }`}
-        >
-          Presencial (13h–17h)
-        </button>
-        <button
-          onClick={() => setTipo("online")}
-          className={`px-4 py-2 rounded border ${
-            tipo === "online" ? "bg-black text-white border-black" : "bg-white text-black hover:bg-gray-50"
-          }`}
-        >
-          Online (13h–17h + 19h seg–sex)
-        </button>
+      {/* Toggle bonito: Presencial x Online */}
+      <div className="inline-flex rounded-full border bg-white p-1 shadow-sm">
+        {([
+          {
+            key: "presencial",
+            label: "Presencial",
+            desc: "13h–17h",
+            icon: (
+              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="currentColor">
+                <path d="M12 3l9 8h-3v9h-5v-6H11v6H6v-9H3l9-8z" />
+              </svg>
+            ),
+          },
+          {
+            key: "online",
+            label: "Online",
+            desc: "13h–17h + 19h seg–sex",
+            icon: (
+              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="currentColor">
+                <path d="M17 10.5V7a2 2 0 0 0-2-2H5C3.9 5 3 5.9 3 7v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3.5l4 4v-11l-4 4z" />
+              </svg>
+            ),
+          },
+        ] as const).map((opt) => {
+          const selected = tipo === (opt.key as Tipo);
+          return (
+            <button
+              key={opt.key}
+              type="button"
+              aria-pressed={selected}
+              onClick={() => setTipo(opt.key as Tipo)}
+              className={[
+                "flex items-center gap-2 rounded-full px-4 py-2 text-sm transition",
+                selected
+                  ? "bg-black text-white shadow-md"
+                  : "text-gray-700 hover:bg-gray-100",
+              ].join(" ")}
+            >
+              <span className={`shrink-0 ${selected ? "opacity-100" : "opacity-80"}`}>{opt.icon}</span>
+              <span className="font-medium">{opt.label}</span>
+              <span className={`text-xs ${selected ? "text-white/80" : "text-gray-500"}`}>· {opt.desc}</span>
+            </button>
+          );
+        })}
       </div>
 
-      {/* Grade de dias (14 dias) com cores por planeta */}
+      {/* Grade de dias úteis (com cores por dia) */}
       <section className="space-y-2">
         <h2 className="font-medium">Selecione a data</h2>
-        <div className="grid grid-cols-2 sm:grid-cols-7 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
           {days.map((d) => {
             const key = toDateKey(d);
             const weekday = d.getDay();
@@ -122,9 +150,13 @@ export default function BookingClient({ providerId }: { providerId: string }) {
               <button
                 key={key}
                 onClick={() => setSelectedKey(key)}
-                className={`p-3 rounded-lg border text-left transition ring-2 ${
-                  selected ? `${st.ring} ring-offset-2` : "ring-transparent"
-                } ${st.bg} ${st.text} hover:brightness-95`}
+                className={[
+                  "p-3 rounded-lg border text-left transition ring-2",
+                  selected ? `${st.ring} ring-offset-2` : "ring-transparent",
+                  st.bg,
+                  st.text,
+                  "hover:brightness-95",
+                ].join(" ")}
               >
                 <div className="text-xs uppercase tracking-wide opacity-80">
                   {d.toLocaleDateString("pt-BR", { weekday: "short" })}
@@ -132,22 +164,19 @@ export default function BookingClient({ providerId }: { providerId: string }) {
                 <div className="text-lg font-semibold">
                   {d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })}
                 </div>
-                <div className="text-[11px] opacity-80 mt-1">
-                  {["Sol", "Lua", "Marte", "Mercúrio", "Júpiter", "Vênus", "Saturno"][weekday]}
-                </div>
+                {/* Sem nomes de planetas; só a cor indica o dia */}
               </button>
             );
           })}
         </div>
       </section>
 
-      {/* Lista de horários do dia selecionado */}
+      {/* Horários do dia selecionado */}
       <section className="space-y-2">
         <h2 className="font-medium">Horários disponíveis</h2>
 
         {loading && <p>Carregando horários…</p>}
         {erro && <p className="text-red-600">Erro: {erro}</p>}
-
         {!loading && !erro && slotsOfDay.length === 0 && (
           <p className="text-gray-600">Nenhum horário para esta data.</p>
         )}
@@ -157,7 +186,6 @@ export default function BookingClient({ providerId }: { providerId: string }) {
             <button
               key={s}
               className="w-full border rounded px-3 py-2 bg-white hover:bg-gray-50 text-left"
-              // TODO: aqui você chama o fluxo de reserva/pagamento
               onClick={() => alert(`Selecionado: ${new Date(s).toLocaleString("pt-BR")}`)}
             >
               {new Date(s).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}{" "}
