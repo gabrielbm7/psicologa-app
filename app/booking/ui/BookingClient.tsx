@@ -1,411 +1,318 @@
-'use client';
+// app/booking/ui/BookingClient.tsx
+"use client";
 
-import React, { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from "react";
 
-// ======================================================
-// Helpers de data (UTC + grade sempre Seg→Sex)
-// ======================================================
+const PROVIDER_ID = "cme85bsyz000072zolcarfaqp"; // id da psicóloga
+type Tipo = "online" | "presencial";
 
-// zera para meia-noite (UTC) da data dada
-function atMidnightUTC(d: Date) {
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+type SlotsResponse = { slots: string[] };
+
+function fmtDateKey(d: Date) {
+  // YYYY-MM-DD no fuso local do navegador
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
-// segunda-feira (ISO) da semana de uma data (UTC)
-function startOfISOWeek(d: Date) {
-  const day = d.getUTCDay(); // 0=Dom, 1=Seg ... 6=Sáb
-  const diffToMon = day === 0 ? -6 : 1 - day; // Domingo volta 6, outros ajustam até Seg
-  const base = atMidnightUTC(d);
-  base.setUTCDate(base.getUTCDate() + diffToMon);
-  return base;
+function startOfToday() {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d;
 }
 
-// gera 3 semanas úteis (Seg→Sex), começando na segunda da semana atual;
-// pula dias anteriores ao "hoje" na primeira semana.
-function buildWeeksStartingMonday(todayUTC = new Date(), weeksCount = 3) {
-  const todayMid = atMidnightUTC(todayUTC);
-  const firstMonday = startOfISOWeek(todayMid);
-  const weeks: Date[][] = [];
+function addDays(d: Date, n: number) {
+  const x = new Date(d);
+  x.setDate(x.getDate() + n);
+  return x;
+}
 
-  for (let w = 0; w < weeksCount; w++) {
-    const week: Date[] = [];
-    for (let i = 0; i < 5; i++) {
-      const d = new Date(firstMonday);
-      d.setUTCDate(d.getUTCDate() + w * 7 + i); // Seg..Sex
-      if (w > 0 || d >= todayMid) {
-        week.push(d);
-      }
-    }
-    if (week.length) weeks.push(week);
+// Gera 15 dias úteis (Seg-Sex) a partir de "hoje"
+function generateBusinessDates3Weeks(): Date[] {
+  const out: Date[] = [];
+  let cursor = startOfToday();
+  while (out.length < 15) {
+    const dow = cursor.getDay(); // 0=Dom, 1=Seg, ... 6=Sab
+    if (dow >= 1 && dow <= 5) out.push(new Date(cursor));
+    cursor = addDays(cursor, 1);
   }
-  return weeks;
+  return out;
 }
 
-// formata yyyy-mm-dd no fuso America/Sao_Paulo (para comparar com slots "2025-08-13T15:00:00-03:00")
-function formatYMDInSaoPaulo(date: Date) {
-  const fmt = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'America/Sao_Paulo',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  });
-  // en-CA -> YYYY-MM-DD
-  return fmt.format(date);
+// Segunda como primeira coluna: 0..4 => Seg..Sex
+function weekdayIndexMonToFri(d: Date) {
+  // JS: 0 Dom..6 Sab  => queremos 0=Seg ..4=Sex
+  const dow = d.getDay();
+  // dow: 1..5 => 0..4
+  return dow - 1;
 }
 
-// label bonitinho dd/mm
-function labelDDMM(date: Date) {
-  const dd = String(date.getUTCDate()).padStart(2, '0');
-  const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
-  return `${dd}/${mm}`;
+// Agrupa 3 semanas (linhas) com colunas fixas Seg..Sex
+function buildWeeksGrid(dates: Date[]) {
+  // garante ordem natural por data
+  const ordered = [...dates].sort((a, b) => a.getTime() - b.getTime());
+
+  // calcula a primeira segunda-feira visível (padrão: a segunda da semana de "hoje",
+  // ou, se hoje for depois de sexta, passa para a segunda seguinte)
+  const today = startOfToday();
+  const todayDow = today.getDay(); // 0 dom..6 sab
+  const mondayOfThisWeek = addDays(today, todayDow === 0 ? 1 : 1 - todayDow); // segunda da semana de hoje
+  const firstMonday =
+    todayDow === 6 /* sábado */ ? addDays(mondayOfThisWeek, 2)
+    : todayDow === 0 /* domingo */ ? addDays(mondayOfThisWeek, 0)
+    : mondayOfThisWeek;
+
+  // gera 3 semanas de colunas (Seg..Sex) a partir do firstMonday
+  const weeks = Array.from({ length: 3 }, (_, w) =>
+    Array.from({ length: 5 }, (_, col) => addDays(firstMonday, w * 7 + col))
+  );
+
+  // cria um set com as datas válidas (15 dias úteis) para esconder células fora do range
+  const validKeys = new Set(ordered.map(fmtDateKey));
+
+  // substitui por null as células (dias) que não estão dentro dos 15 dias úteis
+  const grid = weeks.map((row) =>
+    row.map((cellDate) => (validKeys.has(fmtDateKey(cellDate)) ? cellDate : null))
+  );
+
+  return grid; // 3 linhas x 5 colunas (Seg..Sex)
 }
 
-// ======================================================
-// Paleta: cores por dia (Seg..Sex) aplicadas em dia e hora
-// ======================================================
-const dayLabels = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex'] as const;
-// classes base por dia
-const dayColorBg: Record<typeof dayLabels[number], string> = {
-  Seg: 'bg-[#4a90e2]',   // azul
-  Ter: 'bg-[#7b5aa6]',   // roxo
-  Qua: 'bg-[#f5a623]',   // laranja
-  Qui: 'bg-[#50e3c2]',   // verde água
-  Sex: 'bg-[#d0021b]',   // vermelho
-};
-const dayColorRing: Record<typeof dayLabels[number], string> = {
-  Seg: 'ring-[#4a90e2]',
-  Ter: 'ring-[#7b5aa6]',
-  Qua: 'ring-[#f5a623]',
-  Qui: 'ring-[#50e3c2]',
-  Sex: 'ring-[#d0021b]',
-};
-const dayColorText: Record<typeof dayLabels[number], string> = {
-  Seg: 'text-[#4a90e2]',
-  Ter: 'text-[#7b5aa6]',
-  Qua: 'text-[#f5a623]',
-  Qui: 'text-[#50e3c2]',
-  Sex: 'text-[#d0021b]',
-};
+// Cores “planetárias” por dia (Seg..Sex): só cor, sem texto dos planetas
+const DAY_COLORS = [
+  "#9AA0A6", // Seg (Lua) - cinza
+  "#D93025", // Ter (Marte) - vermelho
+  "#1A73E8", // Qua (Mercúrio) - azul
+  "#F29900", // Qui (Júpiter) - laranja
+  "#DB2777", // Sex (Vênus) - rosa
+];
 
-// dado um Date (UTC), retorna o label Seg..Sex
-function weekdayLabelUTC(d: Date): typeof dayLabels[number] {
-  // getUTCDay(): 0=Dom, 1=Seg..6=Sáb
-  const map = { 1: 'Seg', 2: 'Ter', 3: 'Qua', 4: 'Qui', 5: 'Sex' } as const;
-  const val = d.getUTCDay();
-  return (map as any)[val] ?? 'Seg';
+// badge de dia da semana (Seg, Ter, ...)
+function weekdayLabel(dow: number) {
+  return ["Seg", "Ter", "Qua", "Qui", "Sex"][dow];
 }
 
-// ======================================================
-// Tipos
-// ======================================================
-type TipoSessao = 'online' | 'presencial';
+// formatação pt-BR em São Paulo
+const dateFmt = new Intl.DateTimeFormat("pt-BR", {
+  timeZone: "America/Sao_Paulo",
+  day: "2-digit",
+  month: "2-digit",
+});
 
-type SlotsResponse = {
-  slots: string[]; // ISO com offset, ex: '2025-08-13T15:00:00-03:00'
-};
+const timeFmt = new Intl.DateTimeFormat("pt-BR", {
+  timeZone: "America/Sao_Paulo",
+  hour: "2-digit",
+  minute: "2-digit",
+});
 
-// ======================================================
-// Componente
-// ======================================================
 export default function BookingClient() {
-  // seleção Online/Presencial
-  const [tipo, setTipo] = useState<TipoSessao>('presencial');
-
-  // datas (3 semanas úteis, Seg→Sex)
-  const [weeks] = useState<Date[][]>(() => buildWeeksStartingMonday(new Date(), 3));
-
-  // data selecionada: default = hoje se for dia útil, senão próxima disponível
-  const [selectedDate, setSelectedDate] = useState<Date>(() => {
-    const flat = weeks.flat();
-    return flat[0];
-  });
-
-  // slots carregados para o tipo atual (todos os dias do range). Vamos filtrar pelo dia.
-  const [allSlots, setAllSlots] = useState<string[]>([]);
+  const [tipo, setTipo] = useState<Tipo>("online");
   const [loadingSlots, setLoadingSlots] = useState(false);
-  const [errorSlots, setErrorSlots] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  // seleção de horário + formulário de confirmação
-  const [selectedSlot, setSelectedSlot] = useState<string | null>(null);
-  const [nome, setNome] = useState('');
-  const [email, setEmail] = useState('');
-  const [bookingMsg, setBookingMsg] = useState<string | null>(null);
-  const [bookingBusy, setBookingBusy] = useState(false);
+  // datas válidas (15 dias úteis)
+  const businessDates = useMemo(() => generateBusinessDates3Weeks(), []);
+  const weeksGrid = useMemo(() => buildWeeksGrid(businessDates), [businessDates]);
 
-  // carrega slots ao trocar tipo
+  // mapa YYYY-MM-DD -> array de Date (horários)
+  const [slotsByDay, setSlotsByDay] = useState<Record<string, Date[]>>({});
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+
+  const firstSelectable = useMemo(() => fmtDateKey(businessDates[0]), [businessDates]);
+
   useEffect(() => {
-    let cancel = false;
-    async function run() {
+    // seleciona o primeiro dia útil disponível ao montar ou ao trocar o tipo
+    setSelectedKey(firstSelectable);
+  }, [firstSelectable, tipo]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
       setLoadingSlots(true);
-      setErrorSlots(null);
-      setAllSlots([]);
+      setError(null);
       try {
-        const res = await fetch(`/api/slots?tipo=${tipo}`, { cache: 'no-store' });
+        const params = new URLSearchParams({
+          providerId: PROVIDER_ID,
+          tipo,
+        });
+        const res = await fetch(`/api/slots?${params.toString()}`, { cache: "no-store" });
+        if (!res.ok) throw new Error(`Erro ao carregar slots: ${res.status}`);
         const data: SlotsResponse = await res.json();
-        if (cancel) return;
-        if (!res.ok) {
-          throw new Error((data as any)?.error || 'Falha ao carregar slots');
+
+        // converte em Date e agrupa por dia (apenas dentro dos 15 dias úteis)
+        const validKeys = new Set(businessDates.map(fmtDateKey));
+        const map: Record<string, Date[]> = {};
+        for (const iso of data.slots || []) {
+          const d = new Date(iso);
+          const key = fmtDateKey(d);
+          if (!validKeys.has(key)) continue;
+          if (!map[key]) map[key] = [];
+          map[key].push(d);
         }
-        setAllSlots(data.slots || []);
+        // ordena horários por dia
+        for (const k of Object.keys(map)) {
+          map[k].sort((a, b) => a.getTime() - b.getTime());
+        }
+
+        if (!cancelled) setSlotsByDay(map);
       } catch (e: any) {
-        if (!cancel) setErrorSlots(e.message || 'Erro ao carregar slots');
+        if (!cancelled) setError(e?.message || "Falha ao carregar horários");
       } finally {
-        if (!cancel) setLoadingSlots(false);
+        if (!cancelled) setLoadingSlots(false);
       }
     }
-    run();
-    return () => { cancel = true; };
-  }, [tipo]);
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [tipo, businessDates]);
 
-  // filtra slots do dia selecionado (comparando yyyy-mm-dd no fuso America/Sao_Paulo)
-  const slotsDoDia = useMemo(() => {
-    if (!selectedDate) return [];
-    const ymd = formatYMDInSaoPaulo(selectedDate);
-    return (allSlots || []).filter((iso) => iso.slice(0, 10) === ymd);
-  }, [allSlots, selectedDate]);
-
-  // aparência dos botões Online/Presencial
-  const isTipo = (t: TipoSessao) => tipo === t;
-  const tipoBtnClass = (active: boolean) =>
-    [
-      'w-full sm:w-auto rounded-full px-4 py-2 text-sm font-medium border transition',
-      active
-        ? 'bg-black text-white border-black'
-        : 'bg-white text-black border-black/20 hover:border-black',
-      'focus:outline-none focus:ring-2 focus:ring-black',
-    ].join(' ');
-
-  // clique num horário → abre “formulário” de confirmação
-  function onClickSlot(iso: string) {
-    setSelectedSlot(iso);
-    setBookingMsg(null);
-  }
-
-  // envia reserva para /api/book
-  async function confirmarReserva() {
-    if (!selectedSlot) return;
-    if (!nome.trim() || !email.trim()) {
-      setBookingMsg('Informe nome e e-mail.');
-      return;
-    }
-    setBookingBusy(true);
-    setBookingMsg(null);
-    try {
-      const res = await fetch('/api/book', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          providerId: process.env.NEXT_PUBLIC_PROVIDER_ID || undefined, // se você tiver setado no client
-          userName: nome.trim(),
-          userEmail: email.trim(),
-          tipo: tipo.toUpperCase(), // BACKEND aceita 'ONLINE' | 'PRESENCIAL'
-          startIso: selectedSlot,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data?.error || 'Falha ao reservar');
-      }
-      setBookingMsg('✅ Consulta reservada! Você receberá a confirmação por e-mail.');
-      // limpa seleção de slot após sucesso
-      // setSelectedSlot(null);
-    } catch (e: any) {
-      setBookingMsg(e.message || 'Erro ao reservar');
-    } finally {
-      setBookingBusy(false);
-    }
-  }
-
-  // classes utilitárias para “chips” de dia/slot conforme a cor do dia
-  function dayChipClasses(day: Date, selected: boolean) {
-    const lbl = weekdayLabelUTC(day);
-    const base =
-      'rounded-xl px-3 py-2 text-sm font-medium border transition focus:outline-none focus:ring-2';
-    if (selected) {
-      return `${base} ${dayColorBg[lbl]} text-white border-transparent focus:ring-offset-2`;
-    }
-    return `${base} bg-white ${dayColorText[lbl]} border-${dayColorRing[lbl].replace('ring-', '')} ring-0 hover:ring-2 ${dayColorRing[lbl]} focus:${dayColorRing[lbl]}`;
-  }
-
-  function slotBtnClasses(day: Date) {
-    const lbl = weekdayLabelUTC(day);
-    return [
-      'rounded-lg px-3 py-2 text-sm font-medium border transition',
-      dayColorText[lbl],
-      'bg-white hover:ring-2',
-      dayColorRing[lbl],
-      'border-black/10',
-    ].join(' ');
-  }
-
-  // header de dias fixo (Seg..Sex)
-  const headerDias = dayLabels;
+  const selectedSlots = selectedKey ? slotsByDay[selectedKey] || [] : [];
 
   return (
-    <div className="mx-auto w-full max-w-3xl p-4 sm:p-6">
-      {/* Título simples (sem parênteses extras) */}
-      <h1 className="text-xl font-semibold mb-2">Agendar consulta</h1>
+    <div className="mx-auto max-w-3xl p-4 sm:p-6">
+      <h1 className="text-2xl sm:text-3xl font-bold mb-2">Agendar consulta</h1>
 
-      {/* Toggle Online / Presencial — sem textos de janela de horário */}
-      <div className="flex gap-2 mb-4">
+      {/* Toggle Presencial / Online (sem textos de horários ao lado) */}
+      <div className="flex items-center gap-2 mb-4">
         <button
-          aria-pressed={tipo === 'presencial'}
-          className={tipoBtnClass(isTipo('presencial'))}
-          onClick={() => setTipo('presencial')}
+          type="button"
+          onClick={() => setTipo("presencial")}
+          className={[
+            "flex-1 rounded-full px-4 py-2 text-sm sm:text-base font-semibold transition-all border",
+            tipo === "presencial"
+              ? "bg-black text-white border-black"
+              : "bg-white text-black border-black/20 hover:border-black"
+          ].join(" ")}
+          aria-pressed={tipo === "presencial"}
         >
           Presencial
         </button>
         <button
-          aria-pressed={tipo === 'online'}
-          className={tipoBtnClass(isTipo('online'))}
-          onClick={() => setTipo('online')}
+          type="button"
+          onClick={() => setTipo("online")}
+          className={[
+            "flex-1 rounded-full px-4 py-2 text-sm sm:text-base font-semibold transition-all border",
+            tipo === "online"
+              ? "bg-black text-white border-black"
+              : "bg-white text-black border-black/20 hover:border-black"
+          ].join(" ")}
+          aria-pressed={tipo === "online"}
         >
           Online
         </button>
       </div>
 
-      {/* Cabeçalho dos dias (Seg .. Sex) */}
-      <div className="grid grid-cols-5 gap-2 text-center text-[13px] font-medium mb-2">
-        {headerDias.map((lbl) => (
-          <div key={lbl} className="text-black/70">{lbl}</div>
-        ))}
+      {/* Subtítulo sem parênteses */}
+      <p className="text-gray-600 mb-3">Próximas 3 semanas úteis</p>
+
+      {/* Grade (3 semanas x Seg..Sex) sempre com Segunda como primeira coluna */}
+      <div className="overflow-x-auto -mx-1 mb-4">
+        <div className="min-w-[520px] px-1">
+          {/* Cabeçalho Seg..Sex */}
+          <div className="grid grid-cols-5 gap-2 mb-2">
+            {[0, 1, 2, 3, 4].map((idx) => (
+              <div key={idx} className="text-center text-xs sm:text-sm font-medium">
+                {weekdayLabel(idx)}
+              </div>
+            ))}
+          </div>
+
+          {/* Três linhas (semanas) */}
+          <div className="flex flex-col gap-2">
+            {weeksGrid.map((row, ri) => (
+              <div key={ri} className="grid grid-cols-5 gap-2">
+                {row.map((cell, ci) => {
+                  if (!cell) {
+                    // célula fora do range dos 15 dias úteis
+                    return <div key={ci} className="h-10 rounded-xl bg-gray-100 opacity-60" />;
+                  }
+                  const dowIdx = weekdayIndexMonToFri(cell); // 0..4
+                  const color = DAY_COLORS[dowIdx];
+                  const key = fmtDateKey(cell);
+                  const isSelected = selectedKey === key;
+                  const hasSlots = (slotsByDay[key] || []).length > 0;
+
+                  return (
+                    <button
+                      key={ci}
+                      type="button"
+                      onClick={() => setSelectedKey(key)}
+                      disabled={!hasSlots}
+                      className={[
+                        "h-10 rounded-xl border text-sm font-medium transition-all",
+                        isSelected
+                          ? "ring-2 ring-offset-1"
+                          : "hover:brightness-95 active:brightness-90",
+                        hasSlots ? "opacity-100" : "opacity-40 cursor-not-allowed",
+                      ].join(" ")}
+                      style={{
+                        background: color,
+                        color: isSelected ? "#000" : "#fff",
+                        borderColor: "transparent",
+                      }}
+                      aria-pressed={isSelected}
+                      aria-label={`Selecionar dia ${dateFmt.format(cell)}`}
+                      title={dateFmt.format(cell)}
+                    >
+                      {dateFmt.format(cell)}
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
 
-      {/* Grade de semanas: linhas = semanas, colunas = Seg..Sex */}
-      <div className="space-y-3">
-        {weeks.map((week, wi) => (
-          <div key={wi} className="grid grid-cols-5 gap-2">
-            {week.map((day) => {
-              const isSelected =
-                selectedDate && atMidnightUTC(selectedDate).getTime() === atMidnightUTC(day).getTime();
+      {/* Estado de carregamento / erro */}
+      {loadingSlots && (
+        <div className="text-sm text-gray-600 mb-2">Carregando horários…</div>
+      )}
+      {error && (
+        <div className="text-sm text-red-600 mb-2">Falha ao carregar horários: {error}</div>
+      )}
+
+      {/* Horários do dia selecionado */}
+      <div className="mt-2">
+        <h2 className="text-lg font-semibold mb-2">
+          {selectedKey
+            ? `Horários — ${selectedKey.split("-").reverse().join("/")}`
+            : "Selecione um dia"}
+        </h2>
+
+        {selectedSlots.length === 0 ? (
+          <p className="text-sm text-gray-600">Sem horários para este dia.</p>
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+            {selectedSlots.map((d) => {
+              const dow = weekdayIndexMonToFri(d);
+              const color = DAY_COLORS[dow];
+              const label = timeFmt.format(d);
+
               return (
                 <button
-                  key={day.toISOString()}
-                  onClick={() => setSelectedDate(day)}
-                  className={dayChipClasses(day, isSelected)}
+                  key={d.toISOString()}
+                  type="button"
+                  className="rounded-lg px-3 py-2 text-sm font-semibold border transition-all hover:opacity-90"
+                  style={{
+                    background: color,
+                    color: "#fff",
+                    borderColor: "transparent",
+                  }}
+                  onClick={() => {
+                    // aqui você pode abrir o modal de dados do paciente/pagamento
+                    alert(`Selecionado: ${label} (${tipo})`);
+                  }}
                 >
-                  {labelDDMM(day)}
+                  {label}
                 </button>
               );
             })}
           </div>
-        ))}
+        )}
       </div>
-
-      {/* Slots do dia selecionado */}
-      <div className="mt-6">
-        <div className="text-sm text-black/70 mb-2">
-          {`Horários do dia ${labelDDMM(selectedDate)}:`}
-        </div>
-
-        {loadingSlots && (
-          <div className="text-sm text-black/70">Carregando horários…</div>
-        )}
-        {errorSlots && (
-          <div className="text-sm text-red-600">Falha ao carregar: {errorSlots}</div>
-        )}
-
-        {!loadingSlots && !errorSlots && slotsDoDia.length === 0 && (
-          <div className="text-sm text-black/60">Sem horários disponíveis neste dia.</div>
-        )}
-
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-          {slotsDoDia.map((iso) => {
-            // label de hora local (Brasil)
-            const dt = new Date(iso);
-            const timeLabel = new Intl.DateTimeFormat('pt-BR', {
-              timeZone: 'America/Sao_Paulo',
-              hour: '2-digit',
-              minute: '2-digit',
-            }).format(dt);
-            return (
-              <button
-                key={iso}
-                onClick={() => onClickSlot(iso)}
-                className={slotBtnClasses(selectedDate)}
-              >
-                {timeLabel}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Sheet/modal simples para confirmar reserva */}
-      {selectedSlot && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-2 sm:p-4">
-          <div className="w-full max-w-md rounded-xl bg-white p-4 shadow-lg">
-            <div className="flex items-center justify-between mb-2">
-              <h2 className="text-lg font-semibold">Confirmar consulta</h2>
-              <button
-                className="text-black/60 hover:text-black"
-                onClick={() => setSelectedSlot(null)}
-                aria-label="Fechar"
-              >
-                ✕
-              </button>
-            </div>
-
-            <div className="text-sm text-black/70 mb-3">
-              {tipo === 'online' ? 'Consulta Online' : 'Consulta Presencial'} •{' '}
-              {new Intl.DateTimeFormat('pt-BR', {
-                timeZone: 'America/Sao_Paulo',
-                weekday: 'short',
-                day: '2-digit',
-                month: '2-digit',
-              }).format(new Date(selectedSlot))}{' '}
-              às{' '}
-              {new Intl.DateTimeFormat('pt-BR', {
-                timeZone: 'America/Sao_Paulo',
-                hour: '2-digit',
-                minute: '2-digit',
-              }).format(new Date(selectedSlot))}
-            </div>
-
-            <div className="space-y-2">
-              <input
-                className="w-full rounded-lg border border-black/15 px-3 py-2 text-sm"
-                placeholder="Seu nome"
-                value={nome}
-                onChange={(e) => setNome(e.target.value)}
-              />
-              <input
-                className="w-full rounded-lg border border-black/15 px-3 py-2 text-sm"
-                placeholder="Seu e-mail"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
-            </div>
-
-            {bookingMsg && (
-              <div className="mt-2 text-sm">
-                {bookingMsg.startsWith('✅') ? (
-                  <span className="text-green-600">{bookingMsg}</span>
-                ) : (
-                  <span className="text-red-600">{bookingMsg}</span>
-                )}
-              </div>
-            )}
-
-            <div className="mt-3 flex gap-2">
-              <button
-                disabled={bookingBusy}
-                onClick={confirmarReserva}
-                className="flex-1 rounded-full bg-black text-white px-4 py-2 text-sm font-medium disabled:opacity-50"
-              >
-                {bookingBusy ? 'Enviando…' : 'Confirmar'}
-              </button>
-              <button
-                onClick={() => setSelectedSlot(null)}
-                className="flex-1 rounded-full border border-black/20 px-4 py-2 text-sm font-medium"
-              >
-                Cancelar
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
