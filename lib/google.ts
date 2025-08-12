@@ -3,9 +3,6 @@ import { PrismaClient } from "@prisma/client";
 
 /**
  * Monta a URL de autorização do Google OAuth2.
- * Usa as variáveis de ambiente:
- *  - GOOGLE_CLIENT_ID
- *  - GOOGLE_REDIRECT_URI  (ex.: https://SEU_DOMINIO/api/google/oauth/callback)
  */
 export function makeAuthUrl(providerId: string) {
   const client_id = process.env.GOOGLE_CLIENT_ID!;
@@ -18,8 +15,8 @@ export function makeAuthUrl(providerId: string) {
     client_id,
     redirect_uri,
     response_type: "code",
-    access_type: "offline",     // garante refresh_token
-    prompt: "consent",          // força consentimento (útil para pegar refresh_token)
+    access_type: "offline",
+    prompt: "consent",
     scope,
     include_granted_scopes: "true",
     state: JSON.stringify({ providerId }),
@@ -29,8 +26,6 @@ export function makeAuthUrl(providerId: string) {
 
 /**
  * Troca o authorization code por tokens e persiste no banco.
- * Tabelas esperadas: GoogleAuth (providerId, accessToken, refreshToken, expiryDate)
- * Env requeridos: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI
  */
 export async function exchangeAndStoreTokens(
   prisma: PrismaClient,
@@ -55,7 +50,6 @@ export async function exchangeAndStoreTokens(
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body,
   });
-
   if (!resp.ok) {
     const txt = await resp.text();
     throw new Error("Falha ao trocar code por tokens: " + txt);
@@ -64,30 +58,29 @@ export async function exchangeAndStoreTokens(
   const data = (await resp.json()) as {
     access_token: string;
     refresh_token?: string;
-    expires_in?: number; // em segundos
-    token_type?: string;
-    scope?: string;
+    expires_in?: number;
   };
 
   const accessToken = data.access_token;
-  const refreshToken = data.refresh_token; // pode vir só na 1ª autorização
+  const refreshToken = data.refresh_token; // pode não vir sempre
   const expiresInMs = (data.expires_in ?? 3600) * 1000;
   const expiryDate = new Date(Date.now() + expiresInMs);
 
-  // Upsert mantendo refresh_token antigo se o Google não enviar de novo
   const prev = await prisma.googleAuth.findUnique({ where: { providerId } });
 
   await prisma.googleAuth.upsert({
     where: { providerId },
     update: {
       accessToken,
-      refreshToken: refreshToken ?? prev?.refreshToken ?? null,
+      // ✅ não usar null; use undefined para “não alterar”
+      refreshToken: refreshToken ?? prev?.refreshToken ?? undefined,
       expiryDate,
     },
     create: {
       providerId,
       accessToken,
-      refreshToken: refreshToken ?? null,
+      // ✅ no create também podemos passar undefined
+      refreshToken: refreshToken ?? prev?.refreshToken ?? undefined,
       expiryDate,
     },
   });
@@ -95,7 +88,6 @@ export async function exchangeAndStoreTokens(
 
 /**
  * Garante um access_token válido. Se expirado, renova via refresh_token.
- * Requer: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
  */
 export async function getValidAccessToken(
   prisma: PrismaClient,
@@ -108,7 +100,7 @@ export async function getValidAccessToken(
 
   const now = Date.now();
   const expiresAt = expiryDate ? new Date(expiryDate).getTime() : 0;
-  const safetyWindowMs = 60 * 1000; // 60s de margem
+  const safetyWindowMs = 60 * 1000;
   const isExpired = !accessToken || !expiresAt || expiresAt - safetyWindowMs <= now;
 
   if (!isExpired) return accessToken!;
@@ -131,7 +123,6 @@ export async function getValidAccessToken(
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body,
   });
-
   if (!resp.ok) {
     const txt = await resp.text();
     throw new Error("Falha ao renovar token do Google: " + txt);
@@ -152,13 +143,14 @@ export async function getValidAccessToken(
     where: { providerId },
     update: {
       accessToken: newAccess,
-      refreshToken: newRefresh,
+      // ✅ sem null
+      refreshToken: newRefresh ?? undefined,
       expiryDate: newExpiry,
     },
     create: {
       providerId,
       accessToken: newAccess,
-      refreshToken: newRefresh,
+      refreshToken: newRefresh ?? undefined,
       expiryDate: newExpiry,
     },
   });
@@ -167,15 +159,12 @@ export async function getValidAccessToken(
 }
 
 /**
- * Conveniência usada pelas rotas de debug:
- * retorna um objeto simples com o accessToken para montar chamadas
- * à API do Google Calendar.
+ * Helper para rotas: devolve accessToken e um fetch autenticado.
  */
 export async function getAuthedCalendar(prisma: PrismaClient, providerId: string) {
   const accessToken = await getValidAccessToken(prisma, providerId);
   return {
     accessToken,
-    // azuquinho: helper opcional para fetch JSON com auth
     async fetchJson(url: string, init?: RequestInit) {
       const res = await fetch(url, {
         ...(init || {}),
@@ -189,4 +178,4 @@ export async function getAuthedCalendar(prisma: PrismaClient, providerId: string
       return { ok: res.ok, status: res.status, data };
     },
   };
-}
+}}
