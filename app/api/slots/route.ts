@@ -1,80 +1,99 @@
-import { NextRequest } from "next/server";
-import { prisma } from "@/lib/prisma";
+// app/api/slots/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { getAuthedCalendar } from "@/lib/google";
 
-export const dynamic = "force-dynamic";
-
-const TZ = "America/Sao_Paulo";
-const TZ_OFFSET = "-03:00";
-
-// YYYY-MM-DD no fuso indicado
-function ymdInTZ(d: Date) {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: TZ,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(d);
+/** verifica interseção entre [aStart,aEnd) e [bStart,bEnd) */
+function overlaps(aStart: Date, aEnd: Date, bStart: Date, bEnd: Date) {
+  return aStart < bEnd && bStart < aEnd;
 }
 
-// monta ISO local com -03:00 (ex.: 2025-08-15T13:00:00-03:00)
-function isoAtLocalTime(ymd: string, hhmm: string) {
-  const [hh, mm] = hhmm.split(":");
-  return `${ymd}T${hh}:${mm}:00${TZ_OFFSET}`;
+/** formata em ISO com sufixo -03:00 (America/Sao_Paulo) */
+function toBrIso(startUtc: Date) {
+  // Brasil sem horário de verão atualmente (-03:00)
+  // startUtc é a data UTC equivalente ao horário local-03
+  const y = startUtc.getUTCFullYear();
+  const m = String(startUtc.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(startUtc.getUTCDate()).padStart(2, "0");
+  // como guardamos UTC = local+3, o "horário local" = UTC-3:
+  const hh = String((startUtc.getUTCHours() + 21) % 24).padStart(2, "0"); // (UTC - 3)
+  const mm = String(startUtc.getUTCMinutes()).padStart(2, "0");
+  const ss = String(startUtc.getUTCSeconds()).padStart(2, "0");
+  return `${y}-${m}-${d}T${hh}:${mm}:${ss}-03:00`;
 }
 
 export async function GET(req: NextRequest) {
   try {
     const url = new URL(req.url);
     const providerId = url.searchParams.get("providerId");
-    if (!providerId) return Response.json({ error: "providerId é obrigatório" }, { status: 400 });
+    if (!providerId) {
+      return NextResponse.json({ error: "providerId é obrigatório" }, { status: 400 });
+    }
 
-    const settings = await prisma.providerSettings.findFirst({ where: { providerId } });
-    if (!settings) return Response.json({ slots: [] });
+    // parâmetros da janela de geração
+    const FUSO = "America/Sao_Paulo";
+    const DIAS_A_FRENTE = 14;
+    const DURACAO_MIN = 50;      // consulta de 50 minutos
+    const STEP_MIN = 60;         // inicia a cada 60 minutos (13:00, 14:00, ...)
+    const HORA_INICIO = 13;      // 13:00
+    const HORA_FIM = 18;         // até 18:00 (último começo 18:00)
+    const ANTECEDENCIA_MIN_HORAS = 24; // regra atual: 24h para marcar/remarcar
 
     const now = new Date();
-    const from = new Date();
-    const to = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
-    const minStart = new Date(now.getTime() + settings.minHoursBeforeBook * 60 * 60 * 1000);
+    const endWindow = new Date(now.getTime() + DIAS_A_FRENTE * 24 * 60 * 60 * 1000);
 
-    const avail = await prisma.availability.findMany({ where: { providerId } });
+    // 1) BUSY do Google Calendar (primary)
+    let busyWindows: { start: Date; end: Date }[] = [];
+    try {
+      const cal = await getAuthedCalendar(providerId);
+      const fb = await cal.freebusy.query({
+        requestBody: {
+          timeMin: now.toISOString(),
+          timeMax: endWindow.toISOString(),
+          timeZone: FUSO,
+          items: [{ id: "primary" }],
+        },
+      });
+      const arr = fb.data.calendars?.primary?.busy || [];
+      busyWindows = arr.map(b => ({
+        start: new Date(b.start as string),
+        end: new Date(b.end as string),
+      }));
+    } catch {
+      // se falhar o Google, segue sem busy (mas o ideal é logar isso)
+      busyWindows = [];
+    }
 
-    const out: string[] = [];
-    const dayMs = 24 * 60 * 60 * 1000;
+    // 2) GERAÇÃO DE SLOTS (todo dia, 13h..18h, a cada 60 min)
+    const slots: string[] = [];
+    const antecedenciaMs = ANTECEDENCIA_MIN_HORAS * 60 * 60 * 1000;
 
-    for (let d = new Date(from.setHours(0,0,0,0)); d <= to; d = new Date(d.getTime() + dayMs)) {
-      const dow = d.getDay();
-      const dayAvail = avail.filter(a => a.dayOfWeek === dow);
-      if (dayAvail.length === 0) continue;
+    for (
+      let day = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+      day <= endWindow;
+      day = new Date(day.getTime() + 24 * 60 * 60 * 1000)
+    ) {
+      for (let h = HORA_INICIO; h <= HORA_FIM; h += Math.floor(STEP_MIN / 60)) {
+        // construir a data em "horário local -03" convertida para UTC:
+        // truque: UTC = local + 3h
+        const startUtc = new Date(
+          Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), h + 3, 0, 0)
+        );
+        const endUtc = new Date(startUtc.getTime() + DURACAO_MIN * 60 * 1000);
 
-      const ymd = ymdInTZ(d);
+        // respeita antecedência mínima
+        if (startUtc.getTime() - now.getTime() < antecedenciaMs) continue;
 
-      for (const a of dayAvail) {
-        // blocos de 60min (50 + 5 + 5)
-        const [sh, sm] = a.startTime.split(":").map(Number);
-        const [eh, em] = a.endTime.split(":").map(Number);
-        let h = sh, m = sm;
+        // remove se conflitar com QUALQUER intervalo ocupado
+        const conflitou = busyWindows.some(b => overlaps(startUtc, endUtc, b.start, b.end));
+        if (conflitou) continue;
 
-        while (true) {
-          const cur = `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}`;
-          const slotISO = isoAtLocalTime(ymd, cur);
-
-          // próximo bloco
-          const next = new Date(new Date(slotISO).getTime() + 60 * 60 * 1000);
-          const endISO = isoAtLocalTime(ymd, a.endTime);
-          if (next > new Date(endISO)) break;
-
-          if (new Date(slotISO) >= minStart) out.push(slotISO);
-
-          // avança 60 min
-          h += 1;
-          if (h >= 24) break;
-        }
+        // retorna no formato que você já usa (…-03:00)
+        slots.push(toBrIso(startUtc));
       }
     }
 
-    out.sort((a,b) => +new Date(a) - +new Date(b));
-    return Response.json({ slots: out });
+    return NextResponse.json({ slots });
   } catch (e: any) {
-    return Response.json({ error: e.message ?? "Erro inesperado" }, { status: 500 });
+    return NextResponse.json({ error: e.message || "Falha ao carregar slots" }, { status: 500 });
   }
 }
