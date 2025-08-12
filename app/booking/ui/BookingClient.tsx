@@ -4,15 +4,15 @@ import { useEffect, useMemo, useState } from "react";
 
 type Tipo = "online" | "presencial";
 
-// Paleta por dia (Dom..Sáb). Mantemos só as cores; sem nomes de planetas no UI.
-const weekdayStyles: Record<number, { bg: string; text: string; ring: string }> = {
-  0: { bg: "bg-yellow-100",   text: "text-yellow-800",  ring: "ring-yellow-300" },   // domingo
-  1: { bg: "bg-slate-100",    text: "text-slate-700",   ring: "ring-slate-300" },    // segunda
-  2: { bg: "bg-red-100",      text: "text-red-700",     ring: "ring-red-300" },      // terça
-  3: { bg: "bg-emerald-100",  text: "text-emerald-700", ring: "ring-emerald-300" },  // quarta
-  4: { bg: "bg-blue-100",     text: "text-blue-700",    ring: "ring-blue-300" },     // quinta
-  5: { bg: "bg-pink-100",     text: "text-pink-700",    ring: "ring-pink-300" },     // sexta
-  6: { bg: "bg-purple-100",   text: "text-purple-700",  ring: "ring-purple-300" },   // sábado
+// Paleta por dia da semana (0=Dom .. 6=Sáb) — usamos só cores, sem nomes.
+const weekdayStyles: Record<number, { bg: string; text: string; ring: string; border: string }> = {
+  0: { bg: "bg-yellow-100",   text: "text-yellow-800",  ring: "ring-yellow-300",  border: "border-yellow-200" },  // dom
+  1: { bg: "bg-slate-100",    text: "text-slate-700",   ring: "ring-slate-300",   border: "border-slate-200" },   // seg
+  2: { bg: "bg-red-100",      text: "text-red-700",     ring: "ring-red-300",     border: "border-red-200" },     // ter
+  3: { bg: "bg-emerald-100",  text: "text-emerald-700", ring: "ring-emerald-300", border: "border-emerald-200" }, // qua
+  4: { bg: "bg-blue-100",     text: "text-blue-700",    ring: "ring-blue-300",    border: "border-blue-200" },    // qui
+  5: { bg: "bg-pink-100",     text: "text-pink-700",    ring: "ring-pink-300",    border: "border-pink-200" },    // sex
+  6: { bg: "bg-purple-100",   text: "text-purple-700",  ring: "ring-purple-300",  border: "border-purple-200" },  // sáb
 };
 
 function toDateKey(d: Date) {
@@ -39,7 +39,7 @@ export default function BookingClient({ providerId }: { providerId: string }) {
   const [loading, setLoading] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
 
-  // Próximas 2 semanas (14 dias), mas exibimos apenas dias úteis dentro desse intervalo
+  // Próximas 2 semanas (14 dias), exibindo apenas dias úteis
   const days = useMemo(() => {
     const arr: Date[] = [];
     const today = new Date();
@@ -54,7 +54,6 @@ export default function BookingClient({ providerId }: { providerId: string }) {
 
   const [selectedKey, setSelectedKey] = useState<string>(() => {
     const today = new Date();
-    // se hoje for fim de semana, seleciona a próxima segunda
     if (!isWeekday(today)) {
       const d = new Date(today);
       while (!isWeekday(d)) d.setDate(d.getDate() + 1);
@@ -88,10 +87,12 @@ export default function BookingClient({ providerId }: { providerId: string }) {
     <div className="max-w-3xl mx-auto space-y-6">
       <header className="space-y-2">
         <h1 className="text-2xl font-semibold">Agendar consulta</h1>
-        <p className="text-sm text-gray-600">Escolha o tipo, selecione a data (próximas 2 semanas úteis) e depois um horário.</p>
+        <p className="text-sm text-gray-600">
+          Escolha o tipo, selecione a data (próximas 2 semanas úteis) e depois um horário.
+        </p>
       </header>
 
-      {/* Toggle bonito: Presencial x Online */}
+      {/* Toggle estilizado: Presencial x Online */}
       <div className="inline-flex rounded-full border bg-white p-1 shadow-sm">
         {([
           {
@@ -99,7 +100,7 @@ export default function BookingClient({ providerId }: { providerId: string }) {
             label: "Presencial",
             desc: "13h–17h",
             icon: (
-              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="currentColor">
+              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="currentColor" aria-hidden>
                 <path d="M12 3l9 8h-3v9h-5v-6H11v6H6v-9H3l9-8z" />
               </svg>
             ),
@@ -109,7 +110,7 @@ export default function BookingClient({ providerId }: { providerId: string }) {
             label: "Online",
             desc: "13h–17h + 19h seg–sex",
             icon: (
-              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="currentColor">
+              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="currentColor" aria-hidden>
                 <path d="M17 10.5V7a2 2 0 0 0-2-2H5C3.9 5 3 5.9 3 7v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3.5l4 4v-11l-4 4z" />
               </svg>
             ),
@@ -137,7 +138,7 @@ export default function BookingClient({ providerId }: { providerId: string }) {
         })}
       </div>
 
-      {/* Grade de dias úteis (com cores por dia) */}
+      {/* Grade de dias úteis (com cores do dia) */}
       <section className="space-y-2">
         <h2 className="font-medium">Selecione a data</h2>
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
@@ -155,6 +156,7 @@ export default function BookingClient({ providerId }: { providerId: string }) {
                   selected ? `${st.ring} ring-offset-2` : "ring-transparent",
                   st.bg,
                   st.text,
+                  st.border,
                   "hover:brightness-95",
                 ].join(" ")}
               >
@@ -164,14 +166,13 @@ export default function BookingClient({ providerId }: { providerId: string }) {
                 <div className="text-lg font-semibold">
                   {d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })}
                 </div>
-                {/* Sem nomes de planetas; só a cor indica o dia */}
               </button>
             );
           })}
         </div>
       </section>
 
-      {/* Horários do dia selecionado */}
+      {/* Horários do dia selecionado — com as mesmas cores do dia */}
       <section className="space-y-2">
         <h2 className="font-medium">Horários disponíveis</h2>
 
@@ -182,18 +183,30 @@ export default function BookingClient({ providerId }: { providerId: string }) {
         )}
 
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-          {slotsOfDay.map((s) => (
-            <button
-              key={s}
-              className="w-full border rounded px-3 py-2 bg-white hover:bg-gray-50 text-left"
-              onClick={() => alert(`Selecionado: ${new Date(s).toLocaleString("pt-BR")}`)}
-            >
-              {new Date(s).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}{" "}
-              <span className="text-gray-500">
-                · {new Date(s).toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit" })}
-              </span>
-            </button>
-          ))}
+          {slotsOfDay.map((s) => {
+            const d = new Date(s);
+            const weekday = d.getDay();
+            const st = weekdayStyles[weekday];
+            return (
+              <button
+                key={s}
+                className={[
+                  "w-full border rounded px-3 py-2 text-left transition hover:brightness-95",
+                  st.bg,
+                  st.text,
+                  st.border,
+                ].join(" ")}
+                // TODO: aqui chama o fluxo de reserva/pagamento
+                onClick={() => alert(`Selecionado: ${d.toLocaleString("pt-BR")}`)}
+              >
+                {d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+                <span className="text-black/40">
+                  {" "}
+                  · {d.toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit" })}
+                </span>
+              </button>
+            );
+          })}
         </div>
       </section>
     </div>
