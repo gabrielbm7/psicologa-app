@@ -15,22 +15,25 @@ const weekdayStyles: Record<number, { bg: string; text: string; ring: string; bo
   6: { bg: "bg-purple-100",   text: "text-purple-700",  ring: "ring-purple-300",  border: "border-purple-200" },  // sáb
 };
 
-function toDateKey(d: Date) {
+function toYMD(d: Date) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
 }
-
 function sameDay(aIso: string, key: string) {
   const d = new Date(aIso);
   const [ky, km, kd] = key.split("-").map(Number);
   return d.getFullYear() === ky && d.getMonth() + 1 === km && d.getDate() === kd;
 }
-
-function isWeekday(d: Date) {
-  const dow = d.getDay(); // 0=Dom..6=Sáb
-  return dow >= 1 && dow <= 5;
+function nextMonday(from = new Date()) {
+  const d = new Date(from);
+  d.setHours(0, 0, 0, 0);
+  const dow = d.getDay(); // 0=Dom .. 6=Sáb
+  // se hoje já for segunda (1), começa hoje; senão, vai até a próxima segunda
+  const delta = (dow === 1) ? 0 : ((8 - dow) % 7);
+  d.setDate(d.getDate() + delta);
+  return d;
 }
 
 export default function BookingClient({ providerId }: { providerId: string }) {
@@ -39,28 +42,22 @@ export default function BookingClient({ providerId }: { providerId: string }) {
   const [loading, setLoading] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
 
-  // Próximas 2 semanas (14 dias), exibindo apenas dias úteis
+  // Gera exatamente as próximas 2 semanas úteis:
+  // semana 1: Seg..Sex, semana 2: Seg..Sex — sempre começando na próxima segunda
   const days = useMemo(() => {
+    const start = nextMonday(new Date());
     const arr: Date[] = [];
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    for (let i = 0; i < 14; i++) {
-      const d = new Date(today);
-      d.setDate(today.getDate() + i);
-      if (isWeekday(d)) arr.push(d);
+    for (let week = 0; week < 2; week++) {
+      for (let i = 0; i < 5; i++) {
+        const d = new Date(start);
+        d.setDate(start.getDate() + week * 7 + i);
+        arr.push(d);
+      }
     }
     return arr;
   }, []);
 
-  const [selectedKey, setSelectedKey] = useState<string>(() => {
-    const today = new Date();
-    if (!isWeekday(today)) {
-      const d = new Date(today);
-      while (!isWeekday(d)) d.setDate(d.getDate() + 1);
-      return toDateKey(d);
-    }
-    return toDateKey(today);
-  });
+  const [selectedKey, setSelectedKey] = useState<string>(() => toYMD(nextMonday(new Date())));
 
   // Carrega slots ao mudar tipo/provider
   useEffect(() => {
@@ -70,7 +67,7 @@ export default function BookingClient({ providerId }: { providerId: string }) {
       try {
         const res = await fetch(`/api/slots?providerId=${providerId}&tipo=${tipo}`, { cache: "no-store" });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "Falha ao carregar slots");
+        if (!res.ok) throw new Error(data.error || "Falha ao carregar horários");
         setSlots(data.slots || []);
       } catch (e: any) {
         setErro(e.message);
@@ -88,17 +85,16 @@ export default function BookingClient({ providerId }: { providerId: string }) {
       <header className="space-y-2">
         <h1 className="text-2xl font-semibold">Agendar consulta</h1>
         <p className="text-sm text-gray-600">
-          Escolha o tipo, selecione a data (próximas 2 semanas úteis) e depois um horário.
+          Escolha o tipo, selecione a data nas próximas 2 semanas úteis e depois um horário.
         </p>
       </header>
 
-      {/* Toggle estilizado: Presencial x Online */}
+      {/* Toggle estilizado: Presencial x Online (sem texto de horários) */}
       <div className="inline-flex rounded-full border bg-white p-1 shadow-sm">
         {([
           {
             key: "presencial",
             label: "Presencial",
-            desc: "13h–17h",
             icon: (
               <svg viewBox="0 0 24 24" className="h-4 w-4" fill="currentColor" aria-hidden>
                 <path d="M12 3l9 8h-3v9h-5v-6H11v6H6v-9H3l9-8z" />
@@ -108,7 +104,6 @@ export default function BookingClient({ providerId }: { providerId: string }) {
           {
             key: "online",
             label: "Online",
-            desc: "13h–17h + 19h seg–sex",
             icon: (
               <svg viewBox="0 0 24 24" className="h-4 w-4" fill="currentColor" aria-hidden>
                 <path d="M17 10.5V7a2 2 0 0 0-2-2H5C3.9 5 3 5.9 3 7v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3.5l4 4v-11l-4 4z" />
@@ -125,26 +120,23 @@ export default function BookingClient({ providerId }: { providerId: string }) {
               onClick={() => setTipo(opt.key as Tipo)}
               className={[
                 "flex items-center gap-2 rounded-full px-4 py-2 text-sm transition",
-                selected
-                  ? "bg-black text-white shadow-md"
-                  : "text-gray-700 hover:bg-gray-100",
+                selected ? "bg-black text-white shadow-md" : "text-gray-700 hover:bg-gray-100",
               ].join(" ")}
             >
               <span className={`shrink-0 ${selected ? "opacity-100" : "opacity-80"}`}>{opt.icon}</span>
               <span className="font-medium">{opt.label}</span>
-              <span className={`text-xs ${selected ? "text-white/80" : "text-gray-500"}`}>· {opt.desc}</span>
             </button>
           );
         })}
       </div>
 
-      {/* Grade de dias úteis (com cores do dia) */}
+      {/* Grade de dias (2 semanas úteis), em ordem: Seg..Sex, Seg..Sex */}
       <section className="space-y-2">
         <h2 className="font-medium">Selecione a data</h2>
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
           {days.map((d) => {
-            const key = toDateKey(d);
-            const weekday = d.getDay();
+            const key = toYMD(d);
+            const weekday = d.getDay(); // 1..5 garantido
             const st = weekdayStyles[weekday];
             const selected = key === selectedKey;
             return (
