@@ -95,7 +95,7 @@ export default function Home() {
             width={16}
             height={16}
           />
-          Go to nextjs.org →
+          Site no ar!
         </a>
       </footer>
     </div>
