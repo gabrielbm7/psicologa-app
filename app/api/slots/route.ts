@@ -1,177 +1,156 @@
-// app/api/slots/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
-// ---- Configuração de agenda ----
-const TZ_OFFSET = "-03:00"; // Brasil sem horário de verão
-const PRESENCIAL_HOURS = [13, 14, 15, 16, 17]; // última às 17h
-const ONLINE_EXTRA_HOUR = 19; // extra só para online
-
-// Gera YYYY-MM-DD para um Date em UTC, mas "considerando" o dia local
-function ymd(d: Date) {
-  const yyyy = d.getUTCFullYear();
-  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const dd = String(d.getUTCDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
+// Utilidades simples de data (America/Sao_Paulo, -03:00 fixo)
+const TZ_OFFSET = "-03:00";
+function fmtYMD(d: Date) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
-
-// Constrói string ISO local fixa com offset -03:00, ex: 2025-08-13T13:00:00-03:00
-function localIso(dateStr: string, hour: number) {
-  const hh = String(hour).padStart(2, "0");
-  return `${dateStr}T${hh}:00:00${TZ_OFFSET}`;
+function addDays(d: Date, n: number) {
+  const x = new Date(d.getTime());
+  x.setDate(x.getDate() + n);
+  return x;
 }
-
 function isBusinessDay(d: Date) {
-  const wd = d.getUTCDay(); // 0=Dom, 1=Seg, ... 6=Sáb (usando UTC só pra índice)
+  const wd = d.getDay(); // 0 dom, 6 sáb
   return wd >= 1 && wd <= 5;
 }
-
-// Avança 1 dia (UTC) — suficiente para contagem de dias úteis simples
-function addDays(d: Date, days: number) {
-  const c = new Date(d.getTime());
-  c.setUTCDate(c.getUTCDate() + days);
-  return c;
+function atHourLocalISO(dateYMD: string, hour: number) {
+  // monta "YYYY-MM-DDTHH:00:00-03:00"
+  const hh = String(hour).padStart(2, "0");
+  return `${dateYMD}T${hh}:00:00${TZ_OFFSET}`;
 }
-
-// Lê ocupações (busy) do Google FreeBusy, se houver token; senão retorna lista vazia
-async function getBusyWindowsFromGoogle(accessToken?: string) {
-  if (!accessToken) return [];
-
-  // janela: hoje até +21 dias (3 semanas corridas)
-  const now = new Date();
-  const timeMin = now.toISOString();
-  const timeMax = addDays(now, 21).toISOString();
-
-  try {
-    const res = await fetch("https://www.googleapis.com/calendar/v3/freeBusy", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        timeMin,
-        timeMax,
-        timeZone: "America/Sao_Paulo",
-        items: [{ id: "primary" }],
-      }),
-      // Evita cache em edge
-      cache: "no-store",
-    });
-    if (!res.ok) return [];
-    const data = await res.json();
-    const busy = data?.calendars?.primary?.busy ?? [];
-    // Normaliza para pares [start,end] como strings
-    return busy
-      .map((b: { start?: string; end?: string }) =>
-        b?.start && b?.end ? [b.start, b.end] : null
-      )
-      .filter(Boolean) as [string, string][];
-  } catch {
-    return [];
-  }
+function parseRFC3339ToDate(s: string) {
+  // Google retorna tz no string; Date consegue parsear
+  return new Date(s);
 }
-
-// true se um slot (ISO string com -03:00) colide com alguma janela busy
-function isBusySlot(slotIso: string, busy: [string, string][]) {
-  const s = new Date(slotIso).getTime();
-  const e = s + 60 * 60 * 1000; // 1h
-
-  for (const [bStart, bEnd] of busy) {
-    const bs = new Date(bStart).getTime();
-    const be = new Date(bEnd).getTime();
-    // colisão se houver interseção
-    if (s < be && e > bs) return true;
-  }
-  return false;
-}
-
-// Dedupe por timestamp (ms) + ordena
-function dedupeAndSort(isoList: string[]) {
-  const seen = new Set<number>();
-  const out: string[] = [];
-  for (const iso of isoList) {
-    const t = new Date(iso).getTime();
-    if (!seen.has(t)) {
-      seen.add(t);
-      out.push(iso);
-    }
-  }
-  out.sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
-  return out;
+function overlaps(slotStart: Date, slotEnd: Date, busyStart: Date, busyEnd: Date) {
+  // interseção se start < busyEnd && busyStart < end
+  return slotStart < busyEnd && busyStart < slotEnd;
 }
 
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
-    const providerId = searchParams.get("providerId") || "";
-    const tipoParam = searchParams.get("tipo");
-    const tipo = (tipoParam === "online" || tipoParam === "presencial"
-      ? tipoParam
-      : "online") as "online" | "presencial";
+    const providerId = searchParams.get("providerId") ?? undefined;
+    const tipo = (searchParams.get("tipo") ?? "online") as "online" | "presencial";
 
     if (!providerId) {
-      return NextResponse.json(
-        { error: "providerId é obrigatório" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "providerId é obrigatório" }, { status: 400 });
     }
 
-    // 1) Busca token (opcional). Se não houver, segue sem Google.
-    let accessToken: string | undefined = undefined;
-    try {
-      const row = await prisma.googleAuth.findUnique({
-        where: { providerId },
-        select: { accessToken: true },
-      });
-      accessToken = row?.accessToken || undefined;
-    } catch {
-      accessToken = undefined;
-    }
+    // ------ JANELA: hoje até 3 semanas ÚTEIS ------
+    const today = new Date();
+    const businessDays: string[] = [];
+    let cursor = new Date(today);
 
-    // 2) Janela de 3 semanas úteis a partir de HOJE
-    const today = new Date(); // agora
-    const slots: string[] = [];
-
-    let businessDaysCount = 0;
-    let cursor = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate())); // zera hora
-
-    while (businessDaysCount < 15) {
+    while (businessDays.length < 15) { // 3 semanas úteis = 15 dias úteis
       if (isBusinessDay(cursor)) {
-        const dateStr = ymd(cursor);
-
-        // base presencial
-        const hours = [...PRESENCIAL_HOURS];
-
-        // se online, inclui 19h
-        if (tipo === "online") hours.push(ONLINE_EXTRA_HOUR);
-
-        for (const h of hours) {
-          slots.push(localIso(dateStr, h));
-        }
-
-        businessDaysCount++;
+        businessDays.push(fmtYMD(cursor));
       }
       cursor = addDays(cursor, 1);
     }
 
-    // 3) Remove janelas ocupadas do Google (se houver token)
-    let available = slots;
-    if (accessToken) {
-      const busy = await getBusyWindowsFromGoogle(accessToken);
-      available = slots.filter((s) => !isBusySlot(s, busy));
+    // ------ HORÁRIOS BASE ------
+    // Consultório (presencial): 13,14,15,16,17 (última consulta começa 17h)
+    const baseClinicHours = [13, 14, 15, 16, 17];
+
+    // Online: iguais aos base + 19h (apenas seg-sex)
+    const baseOnlineHours = [...baseClinicHours, 19];
+
+    // Escolhe grade conforme tipo
+    const hoursForTipo = tipo === "presencial" ? baseClinicHours : baseOnlineHours;
+
+    // ------ BUSY (Google + nossos agendamentos HOLD/CONFIRMADO) ------
+    // 1) Google FreeBusy (se a conta estiver conectada)
+    const google = await prisma.googleAuth.findUnique({ where: { providerId } });
+    let googleBusy: Array<{ start: Date; end: Date }> = [];
+
+    if (google?.accessToken) {
+      // timeMin/timeMax em UTC (ISO Z)
+      const timeMin = new Date(businessDays[0] + "T00:00:00" + TZ_OFFSET).toISOString();
+      const lastDay = businessDays[businessDays.length - 1];
+      const timeMax = addDays(new Date(lastDay + "T23:59:59" + TZ_OFFSET), 0).toISOString();
+
+      const res = await fetch("https://www.googleapis.com/calendar/v3/freeBusy", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${google.accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          timeMin,
+          timeMax,
+          items: [{ id: "primary" }],
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const busyArr = data?.calendars?.primary?.busy ?? [];
+        googleBusy = busyArr.map((b: any) => ({
+          start: parseRFC3339ToDate(b.start),
+          end: parseRFC3339ToDate(b.end),
+        }));
+      }
     }
 
-    // 4) Dedupe + sort (resolve qualquer duplicidade “acidental”)
-    const finalSlots = dedupeAndSort(available);
+    // 2) Busy por reservas existentes (HOLD ou CONFIRMADO)
+    const appts = await prisma.appointment.findMany({
+      where: {
+        providerId,
+        status: { in: ["HOLD", "CONFIRMADO"] },
+        // dentro do range aproximado
+        startUtc: {
+          gte: new Date(businessDays[0] + "T00:00:00" + TZ_OFFSET),
+          lte: new Date(businessDays[businessDays.length - 1] + "T23:59:59" + TZ_OFFSET),
+        },
+      },
+      select: { startUtc: true, endUtc: true },
+    });
+    const localBusy = appts.map((a) => ({ start: new Date(a.startUtc), end: new Date(a.endUtc) }));
 
-    return NextResponse.json({ slots: finalSlots }, { headers: { "Cache-Control": "no-store" } });
-  } catch (err) {
-    return NextResponse.json(
-      { ok: false, error: (err as Error)?.message || "Erro desconhecido" },
-      { status: 500 }
+    const allBusy = [...googleBusy, ...localBusy];
+
+    // ------ GERA SLOTS E DEDUPLICA ------
+    const slotsSet = new Set<string>();
+
+    for (const ymd of businessDays) {
+      // se for fim de semana, pula (garantia extra)
+      const d = new Date(ymd + "T12:00:00" + TZ_OFFSET);
+      if (!isBusinessDay(d)) continue;
+
+      // se for presencial, NUNCA incluir 19h; se online, incluir 19h
+      for (const hour of hoursForTipo) {
+        // 19h só aparece quando tipo === "online"
+        if (hour === 19 && tipo !== "online") continue;
+
+        const slotStartISO = atHourLocalISO(ymd, hour);
+        const slotEndISO = atHourLocalISO(ymd, hour + 1);
+
+        const slotStart = new Date(slotStartISO);
+        const slotEnd = new Date(slotEndISO);
+
+        // conflito?
+        const hasConflict = allBusy.some((b) => overlaps(slotStart, slotEnd, b.start, b.end));
+        if (!hasConflict) {
+          slotsSet.add(slotStartISO);
+        }
+      }
+    }
+
+    // Ordena cronologicamente
+    const slots = Array.from(slotsSet).sort(
+      (a, b) => new Date(a).getTime() - new Date(b).getTime()
     );
+
+    return NextResponse.json({ slots });
+  } catch (e: any) {
+    return NextResponse.json({ ok: false, error: String(e?.message ?? e) }, { status: 500 });
   }
 }
